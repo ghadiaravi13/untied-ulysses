@@ -186,7 +186,7 @@
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright [yyyy] [name of copyright owner]
+   Copyright 2026 Together AI
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -199,3 +199,19 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+================================================================================
+
+THIRD-PARTY NOTICES
+
+This repository incorporates source code from the following projects.
+Their original licenses are reproduced in full in the THIRD_PARTY_LICENSES file.
+
+1. torchtitan — (c) Meta Platforms, Inc. and affiliates — BSD 3-Clause License
+   https://github.com/pytorch/torchtitan
+
+2. long-context-attention (YunChang / USP) — Copyright 2024 Jiarui Fang — Apache License 2.0
+   https://github.com/feifeibear/long-context-attention
+
+3. Megatron-DeepSpeed — Copyright (c) 2022 NVIDIA CORPORATION — BSD 3-Clause License
+   https://github.com/deepspeedai/Megatron-DeepSpeed

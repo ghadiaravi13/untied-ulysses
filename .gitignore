@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dylib
+*.pyd
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual envs
+.venv/
+venv/
+ENV/
+*_env/
+
+# Build artifacts
+build/
+dist/
+*.egg
+*.whl
+
+# Test/coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# uv
+.uv/
+
+# TorchTitan outputs
+outputs/
+tb/
+checkpoint/
+profile_trace/
+memory_snapshot/
+*profiler_traces*
+tmp/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+
+
+# FPDT
+*FPDT/Megatron-DeepSpeed/examples_deepspeed/sequence_parallel/data
+*FPDT/Megatron-DeepSpeed/examples_deepspeed/sequence_parallel/outputs
+*FPDT/Megatron-DeepSpeed/examples_deepspeed/sequence_parallel/index-cache
