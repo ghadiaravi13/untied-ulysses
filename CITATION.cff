@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Untied Ulysses: Memory-Efficient Context Parallelism via Headwise Chunking"
+type: software
+license: Apache-2.0
+authors:
+  - family-names: Ghadia
+    given-names: Ravi
+  - family-names: Abraham
+    given-names: Maksim
+  - family-names: Vorobyov
+    given-names: Sergei
+  - family-names: Ryabinin
+    given-names: Max
+url: "https://github.com/togethercomputer/Untied-Ulysses"
+preferred-citation:
+  type: article
+  title: "Untied Ulysses: Memory-Efficient Context Parallelism via Headwise Chunking"
+  authors:
+    - family-names: Ghadia
+      given-names: Ravi
+    - family-names: Abraham
+      given-names: Maksim
+    - family-names: Vorobyov
+      given-names: Sergei
+    - family-names: Ryabinin
+      given-names: Max
+  year: 2026
+  url: "https://arxiv.org/abs/2602.21196"
+  identifiers:
+    - type: url
+      value: "https://arxiv.org/abs/2602.21196"
+    - type: other
+      value: "2602.21196"
+      description: "arXiv eprint ID"
