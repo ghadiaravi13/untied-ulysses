@@ -114,9 +114,16 @@ def upipe_attn_gqa_forward(
             q_out = all_to_all_4D(q_proj, scatter_idx=2, gather_idx=1)
             k_out = all_to_all_4D(k_proj, scatter_idx=2, gather_idx=1)
             v_out = all_to_all_4D(v_proj, scatter_idx=2, gather_idx=1)
+
+            # deleting the inp to all_to_all to avoid memory leaks
+            del q_proj, k_proj, v_proj
+            
         else:
             q_proj = apply_rotary_emb_flash(xq=q_proj, xk=None, freqs_cis=freqs_cis)
             q_out = all_to_all_4D(q_proj, scatter_idx=2, gather_idx=1)
+
+            # deleting the inp to all_to_all to avoid memory leaks
+            del q_proj
 
         attn_out, lse = zigzag_ring_flash_attn_forward(
             ring_group,
@@ -130,10 +137,22 @@ def upipe_attn_gqa_forward(
         )
         lse_list.append(lse)
 
+        # deleting the inp to attn_forward to avoid memory leaks
+        del q_out
+        if (stage+1)//gqa_ratio != stage//gqa_ratio:
+            del k_out, v_out
+
         out_local = all_to_all_4D(attn_out, scatter_idx=1, gather_idx=2)
+
+        # deleting the inp to all_to_all to avoid memory leaks
+        del attn_out
+
         head_start = stage * ulysses_degree
         head_end = head_start + ulysses_degree
         final_out[:, :, head_start:head_end, :] = out_local
+
+        # deleting the output of all_to_all to avoid memory leaks
+        del out_local
 
     return [final_out] + lse_list
 
