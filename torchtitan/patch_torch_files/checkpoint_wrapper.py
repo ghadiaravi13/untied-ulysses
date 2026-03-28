@@ -6,6 +6,7 @@ INP_PIN_MEMORY = False if os.environ.get("INP_PIN_MEMORY", "True") == "False" el
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from contextlib import nullcontext
 from enum import auto, Enum
 from functools import partial
 from typing import Any, Callable, Optional
@@ -20,6 +21,7 @@ from torchtitan.components.activation_chkpt import async_save_on_cpu
 
 from patch_torch_files.patch_TAO import OffloadActivations as tao_save_on_cpu
 
+
 # from torchtune.training import OffloadActivations as async_save_on_cpu
 
 _CHECKPOINT_WRAPPED_MODULE = "_checkpoint_wrapped_module"
@@ -29,8 +31,12 @@ AC_LAYER_STRIDE = int(os.environ.get("AC_LAYER_STRIDE", "1000"))
 USE_TAO = os.environ.get("USE_TAO", "False") == "True"
 
 
-def save_on_cpu(pin_memory, stream=None):
-    if USE_TAO:
+def save_on_cpu(pin_memory, stream=None, offloading=False):
+    
+    if not offloading: # return null context manager
+        return nullcontext()
+    
+    elif USE_TAO:
         return tao_save_on_cpu(
             use_pin_memory=pin_memory,
             stream=stream,
@@ -150,6 +156,7 @@ class CheckpointWrapper(ActivationWrapper):
         checkpoint_fn=None,
         offload_stream=None,
         prefetch_stream=None,
+        offloading=False,
         two_streams=None,
         layer_id=None,
         is_last_layer=False,
@@ -159,6 +166,7 @@ class CheckpointWrapper(ActivationWrapper):
         self.checkpoint_impl = checkpoint_impl
         self.offload_stream = offload_stream
         self.prefetch_stream = prefetch_stream
+        self.offloading = offloading
         self.two_streams = two_streams
         self.layer_id = layer_id
         self.is_last_layer = is_last_layer
@@ -194,7 +202,7 @@ class CheckpointWrapper(ActivationWrapper):
                 # run original module
                 if not self.is_last_layer and self.layer_id % AC_LAYER_STRIDE != 0:
                     with save_on_cpu(
-                        pin_memory=INP_PIN_MEMORY, stream=self.offload_stream
+                        pin_memory=INP_PIN_MEMORY, stream=self.offload_stream, offloading=self.offloading
                     ):
                         return self._checkpoint_wrapped_module(
                             *unpacked_args, **unpacked_kwargs
@@ -207,7 +215,7 @@ class CheckpointWrapper(ActivationWrapper):
             # Pass the function that only takes packed args into reentrant
             # checkpoint API.
             if not self.is_last_layer and self.layer_id % AC_LAYER_STRIDE != 0:
-                with save_on_cpu(pin_memory=INP_PIN_MEMORY, stream=self.offload_stream):
+                with save_on_cpu(pin_memory=INP_PIN_MEMORY, stream=self.offload_stream, offloading=self.offloading):
                     return self.checkpoint_fn(  # type: ignore[misc]
                         my_function,
                         *flat_args,
@@ -219,7 +227,7 @@ class CheckpointWrapper(ActivationWrapper):
                 )
         else:
             if not self.is_last_layer and self.layer_id % AC_LAYER_STRIDE != 0:
-                with save_on_cpu(pin_memory=INP_PIN_MEMORY, stream=self.offload_stream):
+                with save_on_cpu(pin_memory=INP_PIN_MEMORY, stream=self.offload_stream, offloading=self.offloading):
                     return self.checkpoint_fn(  # type: ignore[misc]
                         self._checkpoint_wrapped_module, *args, **kwargs
                     )
@@ -257,6 +265,7 @@ def checkpoint_wrapper(
     checkpoint_fn=None,
     offload_stream=None,
     prefetch_stream=None,
+    offloading=False,
     two_streams=None,
     layer_id=None,
     is_last_layer=False,
@@ -306,6 +315,7 @@ def checkpoint_wrapper(
         checkpoint_fn,
         offload_stream=offload_stream,
         prefetch_stream=prefetch_stream,
+        offloading=offloading,
         two_streams=two_streams,
         layer_id=layer_id,
         is_last_layer=is_last_layer,

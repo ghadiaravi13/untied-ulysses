@@ -455,7 +455,7 @@ class ActivationCheckpoint:
     ] = "selective"
     """Type of activation checkpointing to use"""
 
-    offloading: Literal["no", "UAO", "TAO"] = "no"
+    offloading: Literal["no", "UAO", "TAO", "cpu"] = "no"
     """
     Unsloth's Async Activation Offloading
     """

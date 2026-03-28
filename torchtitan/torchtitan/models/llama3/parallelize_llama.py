@@ -252,6 +252,7 @@ def _apply_ac_to_transformer_block(
             module,
             layer_id=layer_id,
             offload_stream=offload_stream,
+            offloading = ac_config.offloading == "cpu",
             preserve_rng_state=False,
         )
 
@@ -325,6 +326,7 @@ def _apply_ac_to_transformer_block(
             prefetch_stream=prefetch_stream,
             two_streams=two_streams,
             layer_id=layer_id,
+            offloading = ac_config.offloading == "cpu",
             preserve_rng_state=False,
         )
     elif use_layer_sac:
