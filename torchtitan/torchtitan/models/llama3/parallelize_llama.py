@@ -228,6 +228,7 @@ def apply_tp(
 _save_list = {
     torch.ops.aten._scaled_dot_product_flash_attention.default,
     torch.ops.upipe._upipe_attn_gqa_forward.default,
+    torch.ops.yunchang._zigzag_ring_flash_attn_forward.default,
 }
 
 

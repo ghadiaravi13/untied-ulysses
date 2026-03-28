@@ -3,13 +3,14 @@
 # DeepSpeed Team & Jiarui Fang
 
 
-import torch
-
 from typing import Any
-from torch import Tensor
-from yunchang.kernels import AttnType, select_flash_attn_impl
+
+import torch
 import torch.distributed as dist
+from torch import Tensor
+
 from yunchang.comm.all_to_all import SeqAllToAll4D
+from yunchang.kernels import AttnType, select_flash_attn_impl
 
 
 class UlyssesAttention(torch.nn.Module):
@@ -30,7 +31,7 @@ class UlyssesAttention(torch.nn.Module):
         scatter_idx: int = 2,
         gather_idx: int = 1,
         use_sync: bool = False,
-        attn_type : AttnType = AttnType.FA,
+        attn_type: AttnType = AttnType.FA,
     ) -> None:
 
         super(UlyssesAttention, self).__init__()
@@ -40,11 +41,10 @@ class UlyssesAttention(torch.nn.Module):
         self.use_sync = use_sync
         self.attn_type = attn_type
 
-        try:
-            import torch_npu
-            device = torch.device("npu")
-        except:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        gpu_name = torch.cuda.get_device_name(device)
+        if "Turing" in gpu_name or "Tesla" in gpu_name or "T4" in gpu_name:
+            self.attn_type = AttnType.TORCH
         self.attn_fn = select_flash_attn_impl(self.attn_type, stage="fwd-bwd")
 
     def forward(
@@ -79,38 +79,32 @@ class UlyssesAttention(torch.nn.Module):
         # (bs, seq_len/N, head_cnt, head_size) -> (bs, seq_len, head_cnt/N, head_size)
 
         # scatter 2, gather 1
-        q = SeqAllToAll4D.apply(self.spg, query, self.scatter_idx, self.gather_idx, self.use_sync)
-        k = SeqAllToAll4D.apply(self.spg, key, self.scatter_idx, self.gather_idx, self.use_sync)
-        v = SeqAllToAll4D.apply(self.spg, value, self.scatter_idx, self.gather_idx, self.use_sync)
+        q = SeqAllToAll4D.apply(
+            self.spg, query, self.scatter_idx, self.gather_idx, self.use_sync
+        )
+        k = SeqAllToAll4D.apply(
+            self.spg, key, self.scatter_idx, self.gather_idx, self.use_sync
+        )
+        v = SeqAllToAll4D.apply(
+            self.spg, value, self.scatter_idx, self.gather_idx, self.use_sync
+        )
 
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** -0.5
 
-        if self.attn_type is AttnType.NPU:
-            context_layer = self.attn_fn(
-                q,
-                k,
-                v,
-                head_num = q.shape[-2], 
-                input_layout = "BSND",  
-                scale = softmax_scale, 
-                pre_tokens=65535, 
-                next_tokens=65535,
-            )
-        else:
-            context_layer = self.attn_fn(
-                q,
-                k,
-                v,
-                dropout_p=dropout_p,
-                softmax_scale = softmax_scale,
-                causal=causal,
-                window_size=window_size,
-                softcap=softcap,
-                alibi_slopes=alibi_slopes,
-                deterministic=deterministic,
-                return_attn_probs=return_attn_probs,
-            )
+        context_layer = self.attn_fn(
+            q,
+            k,
+            v,
+            dropout_p=dropout_p,
+            softmax_scale=softmax_scale,
+            causal=causal,
+            window_size=window_size,
+            softcap=softcap,
+            alibi_slopes=alibi_slopes,
+            deterministic=deterministic,
+            return_attn_probs=return_attn_probs,
+        )
 
         if isinstance(context_layer, tuple):
             context_layer = context_layer[0]
@@ -123,4 +117,3 @@ class UlyssesAttention(torch.nn.Module):
 
         # out e.g., [s/p::h]
         return output
-

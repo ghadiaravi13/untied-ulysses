@@ -1,14 +1,26 @@
-from yunchang.comm.all_to_all import SeqAllToAll4D, SeqAllToAll5D
+from typing import Any, Tuple
 
 import torch
 
-from typing import Any
+import torch.distributed as dist
 from torch import Tensor
 
-import torch.distributed as dist
-from .utils import RING_IMPL_DICT, RING_IMPL_QKVPACKED_DICT
-from yunchang.globals import PROCESS_GROUP, HAS_SPARSE_SAGE_ATTENTION
+from yunchang.comm.all_to_all import SeqAllToAll4D, SeqAllToAll5D
+from yunchang.globals import HAS_SPARSE_SAGE_ATTENTION, PROCESS_GROUP
 from yunchang.kernels import AttnType
+from .utils import RING_IMPL_DICT, RING_IMPL_QKVPACKED_DICT
+
+
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """torch.repeat_interleave(x, dim=2, repeats=n_rep)"""
+    bs, slen, n_kv_heads, head_dim = x.shape
+    if n_rep == 1:
+        return x
+    return (
+        torch.unsqueeze(x, dim=3)
+        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
+        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
+    )
 
 
 class LongContextAttention(torch.nn.Module):
@@ -47,12 +59,18 @@ class LongContextAttention(torch.nn.Module):
         self.gather_idx = gather_idx
         self.attn_processor = attn_processor
         self.ring_attn_fn = RING_IMPL_DICT[ring_impl_type]
+        self.ring_impl_type = ring_impl_type
 
         if HAS_SPARSE_SAGE_ATTENTION:
             from spas_sage_attn.autotune import SparseAttentionMeansim
-            if isinstance(attn_processor, SparseAttentionMeansim) and dist.get_world_size(self.ring_pg) > 1:
-                raise RuntimeError("Sparse Sage attention does not support ring degree > 1.")
-        
+
+            if (
+                isinstance(attn_processor, SparseAttentionMeansim)
+                and dist.get_world_size(self.ring_pg) > 1
+            ):
+                raise RuntimeError(
+                    "Sparse Sage attention does not support ring degree > 1."
+                )
 
     def forward(
         self,
@@ -84,55 +102,44 @@ class LongContextAttention(torch.nn.Module):
         # 3 X (bs, seq_len/N, head_cnt, head_size) -> 3 X (bs, seq_len, head_cnt/N, head_size)
         # scatter 2, gather 1
         if self.use_pack_qkv:
-            # (3*bs, seq_len/N, head_cnt, head_size)
-            qkv = torch.cat([query, key, value]).continous()
-            # (3*bs, seq_len, head_cnt/N, head_size)
-            qkv = SeqAllToAll4D.apply(
-                self.ulysses_pg, qkv, self.scatter_idx, self.gather_idx, use_sync=self.use_sync
-            )
-            qkv = torch.chunk(qkv, 3, dim=0)
-            out = self.ring_attn_fn(
-                qkv[0],
-                qkv[1],
-                qkv[2],
-                dropout_p=dropout_p,
-                softmax_scale=softmax_scale,
-                causal=causal,
-                window_size=window_size,
-                softcap=softcap,
-                alibi_slopes=alibi_slopes,
-                deterministic=deterministic,
-                return_attn_probs=return_attn_probs,
-                group=self.ring_pg,
-                attn_type=self.attn_type,
-                attn_processor=self.attn_processor,
-            )
-        else:
-            query_layer = SeqAllToAll4D.apply(
-                self.ulysses_pg, query, self.scatter_idx, self.gather_idx, self.use_sync
-            )
-            key_layer = SeqAllToAll4D.apply(
-                self.ulysses_pg, key, self.scatter_idx, self.gather_idx, self.use_sync
-            )
-            value_layer = SeqAllToAll4D.apply(
-                self.ulysses_pg, value, self.scatter_idx, self.gather_idx, self.use_sync
-            )
-            if self.attn_type is AttnType.NPU:
-                out = self.ring_attn_fn(
-                    self.ring_pg,
-                    query_layer,
-                    key_layer,
-                    value_layer,
-                    softmax_scale=softmax_scale,
-                    causal=causal,
-                    attn_type=self.attn_type,
-                    attn_processor=self.attn_processor,
+            # dist expects qkv in (b, h, s, d) format, so we need to transpose them here.
+            if "dist" in self.ring_impl_type:
+                print(
+                    f"[DEBUG] Rank {dist.get_rank()}: About to call SeqAllToAll4D.apply for dist",
+                    flush=True,
                 )
-            else:
+                # (3*bs, seq_len/N, head_cnt, head_size)
+                bs, head_cnt, seq_len, head_size = query.shape
+                if key.shape[1] != query.shape[1]:
+                    query = query.reshape(-1, key.shape[1], seq_len, head_size)
+                qkv = torch.cat([query, key, value]).contiguous()
+                q_chunks = query.shape[0]
+                # (3*bs, seq_len, head_cnt/N, head_size)
+                qkv = SeqAllToAll4D.apply(
+                    self.ulysses_pg,
+                    qkv,
+                    self.gather_idx,
+                    self.scatter_idx,
+                    self.use_sync,
+                )
+                qkv = torch.chunk(qkv, q_chunks + 2, dim=0)
+
+                q = (
+                    torch.stack(qkv[:q_chunks], dim=0).reshape(
+                        bs, head_cnt, seq_len, head_size
+                    )
+                    if q_chunks > 1
+                    else qkv[q_chunks - 1]
+                )
+                k = qkv[q_chunks]
+                v = qkv[q_chunks + 1]
+                assert (
+                    q.shape[1] % k.shape[1] == 0
+                ), f"q.shape[1] {q.shape[1]} must be divisible by k.shape[1] {k.shape[1]}"
                 out = self.ring_attn_fn(
-                    query_layer,
-                    key_layer,
-                    value_layer,
+                    q,
+                    k,
+                    v,
                     dropout_p=dropout_p,
                     softmax_scale=softmax_scale,
                     causal=causal,
@@ -146,6 +153,111 @@ class LongContextAttention(torch.nn.Module):
                     attn_processor=self.attn_processor,
                 )
 
+                if type(out) == tuple:
+                    context_layer, _, _ = out
+                else:
+                    context_layer = out
+
+                # (bs, head_cnt/N, seq_len, head_size) -> (bs, head_cnt, seq_len/N, head_size)
+                # scatter 2, gather 1
+                print(
+                    f"[DEBUG] Rank {dist.get_rank()}: About to call SeqAllToAll4D.apply ",
+                    flush=True,
+                )
+                output = SeqAllToAll4D.apply(
+                    self.ulysses_pg,
+                    context_layer,
+                    self.scatter_idx,
+                    self.gather_idx,
+                    self.use_sync,
+                )
+                print(
+                    f"[DEBUG] Rank {dist.get_rank()}: SeqAllToAll4D.apply completed {output.shape}",
+                    flush=True,
+                )
+                # out e.g., [s/p::h]
+                return output
+
+            # zigzag expects qkv in (b, s, h, d) format
+            else:
+                # (3*bs, seq_len/N, head_cnt, head_size)
+                bs, seq_len, head_cnt, head_size = query.shape
+                if key.shape[2] != query.shape[2]:
+                    query = (
+                        query.transpose(1, 2)
+                        .reshape(-1, key.shape[2], seq_len, head_size)
+                        .transpose(1, 2)
+                    )
+                qkv = torch.cat([query, key, value]).contiguous()
+
+                q_chunks = query.shape[0]
+                # (3*bs, seq_len, head_cnt/N, head_size)
+                qkv = SeqAllToAll4D.apply(
+                    self.ulysses_pg,
+                    qkv,
+                    self.scatter_idx,
+                    self.gather_idx,
+                    self.use_sync,
+                )
+                qkv = torch.chunk(qkv, q_chunks + 2, dim=0)
+
+                q = (
+                    torch.stack(qkv[:q_chunks], dim=0)
+                    .transpose(1, 2)
+                    .reshape(bs, head_cnt, seq_len, head_size)
+                    .transpose(1, 2)
+                    if q_chunks > 1
+                    else qkv[q_chunks - 1]
+                )
+                k = qkv[q_chunks]
+                v = qkv[q_chunks + 1]
+                assert (
+                    q.shape[2] % k.shape[2] == 0
+                ), f"q.shape[2] {q.shape[2]} must be divisible by k.shape[2] {k.shape[2]}"
+                out = self.ring_attn_fn(
+                    q,
+                    k,
+                    v,
+                    dropout_p=dropout_p,
+                    softmax_scale=softmax_scale,
+                    causal=causal,
+                    window_size=window_size,
+                    softcap=softcap,
+                    alibi_slopes=alibi_slopes,
+                    deterministic=deterministic,
+                    return_attn_probs=return_attn_probs,
+                    group=self.ring_pg,
+                    attn_type=self.attn_type,
+                    attn_processor=self.attn_processor,
+                )
+
+        else:
+            world_size = dist.get_world_size(self.ulysses_pg)
+
+            if key.shape[self.scatter_idx] < world_size:
+                assert (
+                    world_size % key.shape[self.scatter_idx] == 0
+                ), f"world_size {world_size} must be divisible by key head count {key.shape[self.scatter_idx]}"
+                key = repeat_kv(key, world_size // key.shape[self.scatter_idx])
+                value = repeat_kv(value, world_size // value.shape[self.scatter_idx])
+
+            out = self.ring_attn_fn(
+                query,
+                key,
+                value,
+                dropout_p=dropout_p,
+                softmax_scale=softmax_scale,
+                causal=causal,
+                window_size=window_size,
+                softcap=softcap,
+                alibi_slopes=alibi_slopes,
+                deterministic=deterministic,
+                return_attn_probs=return_attn_probs,
+                group=self.ring_pg,
+                attn_type=self.attn_type,
+                attn_processor=self.attn_processor,
+            )
+
         if type(out) == tuple:
             context_layer, _, _ = out
         else:
@@ -153,11 +265,9 @@ class LongContextAttention(torch.nn.Module):
 
         # (bs, seq_len, head_cnt/N, head_size) -> (bs, seq_len/N, head_cnt, head_size)
         # scatter 1, gather 2
-        output = SeqAllToAll4D.apply(
-            self.ulysses_pg, context_layer, self.gather_idx, self.scatter_idx, self.use_sync
-        )
 
-        # out e.g., [s/p::h]
+        output = context_layer
+
         return output
 
 
@@ -194,7 +304,7 @@ class LongContextAttentionQKVPacked(torch.nn.Module):
         self.use_sync = use_sync
         self.ring_attn_fn = RING_IMPL_QKVPACKED_DICT[ring_impl_type]
         self.attn_type = attn_type
-        
+
     def forward(
         self,
         qkv,
@@ -220,8 +330,6 @@ class LongContextAttentionQKVPacked(torch.nn.Module):
             * output (Tensor): context output
         """
 
-        # scatter 3, gather 1
-
         world_size = dist.get_world_size(self.ulysses_pg)
 
         if world_size > 1:
@@ -243,8 +351,6 @@ class LongContextAttentionQKVPacked(torch.nn.Module):
             attn_type=self.attn_type,
         )
 
-        # print(f"out {out.shape}")
-
         if type(out) == tuple:
             out = out[0]
 
@@ -253,7 +359,10 @@ class LongContextAttentionQKVPacked(torch.nn.Module):
 
         if world_size > 1:
             out = SeqAllToAll4D.apply(
-                self.ulysses_pg, out, self.gather_idx, self.scatter_idx - 1, self.use_sync
+                self.ulysses_pg,
+                out,
+                self.gather_idx,
+                self.scatter_idx - 1,
+                self.use_sync,
             )
-        # out e.g., [s/p::h]
         return out

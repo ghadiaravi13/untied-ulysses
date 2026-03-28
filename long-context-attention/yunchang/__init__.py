@@ -1,12 +1,6 @@
 from .hybrid import *
 from .ring import *
 from .ulysses import *
-from .globals import set_seq_parallel_pg, patch_ulysses_ring_pg
-from .comm.extract_local import (
-    stripe_extract_local,
-    basic_extract_local,
-    zigzag_extract_local,
-    EXTRACT_FUNC_DICT,
-)
+from .globals import patch_ulysses_ring_pg, set_seq_parallel_pg
 
-__version__ = "0.6.4"
+__version__ = "0.6.3.post1"

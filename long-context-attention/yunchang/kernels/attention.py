@@ -1,34 +1,25 @@
 import math
+import os
 from typing import Optional, Tuple
 
 import torch
-_scaled_dot_product_flash_attention = torch.ops.aten._scaled_dot_product_flash_attention
-_scaled_dot_product_efficient_attention = torch.ops.aten._scaled_dot_product_efficient_attention
 
-# Apply Moore Threads PyTorch Patches. It will not interfere CUDA setup if you are
-# not running in Moore Threads's environment.
-try:
-    import torch_musa
-    _scaled_dot_product_flash_attention = torch.ops.aten._scaled_dot_product_attention_flash_musa
-    # The efficient operator hasn't been implemented yet
-    _scaled_dot_product_efficient_attention = None
-except ModuleNotFoundError:
-    pass
-
-from yunchang.globals import HAS_FLASH_ATTN, HAS_FLASH_ATTN_HOPPER, HAS_FLASHINFER, HAS_AITER, HAS_NPU
-
-if HAS_AITER:
-    import aiter
-    from aiter import flash_attn_func as flash_attn_func_aiter
+from yunchang.globals import HAS_FLASH_ATTN, HAS_FLASH_ATTN_HOPPER, HAS_FLASHINFER
 
 if HAS_FLASH_ATTN:
     import flash_attn
-    from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
+    from flash_attn.flash_attn_interface import (
+        _flash_attn_backward,
+        _flash_attn_forward,
+    )
+
 
 if HAS_FLASH_ATTN_HOPPER:
-    from flash_attn_interface import _flash_attn_forward as flash_attn_forward_hopper
-    from flash_attn_interface import _flash_attn_backward as flash_attn_func_hopper_backward
-    from flash_attn_interface import flash_attn_func as flash3_attn_func
+    from flash_attn_interface import (
+        _flash_attn_backward as flash_attn_func_hopper_backward,
+        _flash_attn_forward as flash_attn_forward_hopper,
+        flash_attn_func as flash3_attn_func,
+    )
 else:
     flash_attn_forward_hopper = None
     flash_attn_func_hopper_backward = None
@@ -36,10 +27,14 @@ else:
 
 if HAS_FLASHINFER:
     from flashinfer.prefill import single_prefill_with_kv_cache
+
     _LOG2_E = math.log2(math.e)
 
-if HAS_NPU:
-    import torch_npu
+import torch
+import torch.nn.functional as F
+
+aten = torch.ops.aten
+
 
 def pytorch_attn_forward(
     q: torch.Tensor,
@@ -54,7 +49,7 @@ def pytorch_attn_forward(
     return_softmax=False,
     op_type="flash",
 ):
-    assert op_type in ["flash", "efficient", "math", "cudnn"], f"Invalid op_type: {op_type}"
+    assert op_type in ["flash", "efficient"], f"Invalid op_type: {op_type}"
     """
     q shape (bs, seqlen, nhead, hs)
     k shape (bs, seqlen, nhead, hs)
@@ -65,7 +60,7 @@ def pytorch_attn_forward(
     v = v.transpose(1, 2)
 
     if op_type == "flash":
-        out, lse = _scaled_dot_product_flash_attention(
+        out, lse = aten._scaled_dot_product_flash_attention(
             q,
             k,
             v,
@@ -74,7 +69,7 @@ def pytorch_attn_forward(
             scale=softmax_scale,
         )[:2]
     elif op_type == "efficient":
-        out, lse = _scaled_dot_product_efficient_attention(
+        out, lse = aten._scaled_dot_product_efficient_attention(
             q,
             k,
             v,
@@ -84,56 +79,13 @@ def pytorch_attn_forward(
             is_causal=causal,
             scale=softmax_scale,
         )[:2]
-    elif op_type == "math":
-        # Use PyTorch's scaled_dot_product_attention with MATH backend
-        if hasattr(torch.nn.attention, 'sdpa_kernel'):
-            with torch.nn.attention.sdpa_kernel(backends=[torch.nn.attention.SDPBackend.MATH]):
-                out = torch.nn.functional.scaled_dot_product_attention(
-                    q, k, v,
-                    attn_mask=None,
-                    dropout_p=dropout_p,
-                    is_causal=causal,
-                    scale=softmax_scale,
-                )
-        else:
-            # Fallback for older PyTorch versions
-            out = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v,
-                attn_mask=None,
-                dropout_p=dropout_p,
-                is_causal=causal,
-                scale=softmax_scale,
-            )
-        # For math backend, LSE is not available, use zeros as fallback
-        lse = torch.zeros(q.shape[0], q.shape[1], q.shape[2], dtype=q.dtype, device=q.device)
-    elif op_type == "cudnn":
-        # Use PyTorch's scaled_dot_product_attention with CUDNN backend
-        if hasattr(torch.nn.attention, 'sdpa_kernel'):
-            with torch.nn.attention.sdpa_kernel(backends=[torch.nn.attention.SDPBackend.CUDNN_ATTENTION]):
-                out = torch.nn.functional.scaled_dot_product_attention(
-                    q, k, v,
-                    attn_mask=None,
-                    dropout_p=dropout_p,
-                    is_causal=causal,
-                    scale=softmax_scale,
-                )
-        else:
-            # Fallback for older PyTorch versions
-            out = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v,
-                attn_mask=None,
-                dropout_p=dropout_p,
-                is_causal=causal,
-                scale=softmax_scale,
-            )
-        # For cudnn backend, LSE is not available, use zeros as fallback
-        lse = torch.zeros(q.shape[0], q.shape[1], q.shape[2], dtype=q.dtype, device=q.device)
     else:
         raise ValueError(f"Invalid op_type: {op_type}")
-    
+
     out = out.transpose(1, 2)
     lse = lse.to(q.dtype)
     return out, lse
+
 
 def pytorch_attn_backward(
     dout,
@@ -156,30 +108,34 @@ def pytorch_attn_backward(
     *args,
     **kwargs,
 ):
-    raise RuntimeError("Not implemented backward for PyTorch attention types")
+    raise RuntimeError("Not implemented backward for AttnType.TORCH")
     # TODO(optim): use pytorch _scaled_dot_product_efficient_attention_backward
     # Use efficient attention backward
     # https://github.com/pytorch/pytorch/blob/main/tools/autograd/derivatives.yaml#L2874
 
 
-def flash_attn_forward(q, k, v, 
-        dropout_p = 0.0, 
-        softmax_scale = None, 
-        causal=False, 
-        window_size=(-1, -1), 
-        softcap=None, 
-        alibi_slopes=None, 
-        return_softmax=False):
+def flash_attn_forward(
+    q,
+    k,
+    v,
+    dropout_p=0.0,
+    softmax_scale=None,
+    causal=False,
+    window_size=(-1, -1),
+    softcap=None,
+    alibi_slopes=None,
+    return_softmax=False,
+):
     assert HAS_FLASH_ATTN, "FlashAttention is not available"
     if softmax_scale is None:
         softmax_scale = q.shape[-1] ** (-0.5)
-    if flash_attn.__version__ < '2.6.3':
+    if flash_attn.__version__ < "2.6.3":
         block_out, _, _, _, _, block_lse, _, _ = _flash_attn_forward(
             q,
             k,
             v,
-            dropout_p = dropout_p,
-            softmax_scale = softmax_scale,
+            dropout_p=dropout_p,
+            softmax_scale=softmax_scale,
             causal=causal,
             window_size=window_size,
             softcap=softcap,
@@ -191,8 +147,8 @@ def flash_attn_forward(q, k, v,
             q,
             k,
             v,
-            dropout_p = dropout_p,
-            softmax_scale = softmax_scale,
+            dropout_p=dropout_p,
+            softmax_scale=softmax_scale,
             causal=causal,
             window_size_left=window_size[0],
             window_size_right=window_size[1],
@@ -202,12 +158,30 @@ def flash_attn_forward(q, k, v,
         )
     return block_out, block_lse
 
-def flash_attn_backward(dout, q, k, v, out, softmax_lse, block_dq_buffer, block_dk_buffer, block_dv_buffer, dropout_p, softmax_scale, 
-    bwd_causal, window_size, softcap, alibi_slopes, deterministic, rng_state):
+
+def flash_attn_backward(
+    dout,
+    q,
+    k,
+    v,
+    out,
+    softmax_lse,
+    block_dq_buffer,
+    block_dk_buffer,
+    block_dv_buffer,
+    dropout_p,
+    softmax_scale,
+    bwd_causal,
+    window_size,
+    softcap,
+    alibi_slopes,
+    deterministic,
+    rng_state,
+):
     if softmax_scale is None:
         softmax_scale = q.shape[-1] ** (-0.5)
     assert HAS_FLASH_ATTN
-    if flash_attn.__version__ < '2.6.3':
+    if flash_attn.__version__ < "2.6.3":
         _flash_attn_backward(
             dout,
             q,
@@ -248,16 +222,36 @@ def flash_attn_backward(dout, q, k, v, out, softmax_lse, block_dq_buffer, block_
             deterministic,
             rng_state,
         )
-    
 
-def flash_attn3_func_forward(q, k, v, dropout_p, softmax_scale, causal, window_size, softcap, alibi_slopes, return_softmax):
+
+def flash_attn3_func_forward(
+    q,
+    k,
+    v,
+    dropout_p,
+    softmax_scale,
+    causal,
+    window_size,
+    softcap,
+    alibi_slopes,
+    return_softmax,
+):
     assert HAS_FLASH_ATTN_HOPPER
     # current signature of flash_attn_forward_hopper:
     # out, q, k, v, out_padded, softmax_lse, S_dmask = flash_attn_forward_hopper(
     #     q, k, v, softmax_scale, causal, window_size
     # )
-    
-    num_splits = 1
+    # Compute attention chunking for long sequences; default to 131072 unless overridden by env
+    seqlen_q = q.shape[1]
+    try:
+        env_chunk = int(os.getenv("YUNCHANG_FA3_ATTENTION_CHUNK", "-1"))
+    except Exception:
+        env_chunk = 131072
+    attention_chunk = max(0, env_chunk)
+    if attention_chunk == 0:
+        num_splits = 1
+    else:
+        num_splits = max(1, (seqlen_q + attention_chunk - 1) // attention_chunk)
 
     out, softmax_lse, *rest = flash_attn_forward_hopper(
         q,
@@ -288,6 +282,7 @@ def flash_attn3_func_forward(q, k, v, dropout_p, softmax_scale, causal, window_s
         window_size_left=window_size[0],
         window_size_right=window_size[1],
         # attention_chunk=0,  # previous behavior (no chunking)
+        attention_chunk=attention_chunk,
         softcap=softcap,
         # num_splits=1,  # previous behavior (no splitting)
         num_splits=num_splits,
@@ -297,13 +292,44 @@ def flash_attn3_func_forward(q, k, v, dropout_p, softmax_scale, causal, window_s
 
     return out, softmax_lse
 
-def flash_attn3_func_backward(dout, q, k, v, out, softmax_lse, 
-                                    block_dq_buffer, block_dk_buffer, block_dv_buffer, 
-                                    dropout_p, softmax_scale, 
-                                    bwd_causal, window_size, softcap, alibi_slopes, deterministic, rng_state):
+
+def flash_attn3_func_backward(
+    dout,
+    q,
+    k,
+    v,
+    out,
+    softmax_lse,
+    block_dq_buffer,
+    block_dk_buffer,
+    block_dv_buffer,
+    dropout_p,
+    softmax_scale,
+    bwd_causal,
+    window_size,
+    softcap,
+    alibi_slopes,
+    deterministic,
+    rng_state,
+):
     # (dout, q, k, v, out, softmax_lse, dq, dk, dv, softmax_scale, causal):
     assert HAS_FLASH_ATTN_HOPPER, f"FlashAttention Hopper is not available"
 
+    # flash_attn_func_hopper_backward(
+    #     dout,
+    #     q,
+    #     k,
+    #     v,
+    #     out,
+    #     softmax_lse,
+    #     block_dq_buffer,
+    #     block_dk_buffer,
+    #     block_dv_buffer,
+    #     softmax_scale,
+    #     bwd_causal,
+    #     window_size,
+    #     deterministic,
+    # )
     flash_attn_func_hopper_backward(
         dout,
         q,
@@ -329,29 +355,6 @@ def flash_attn3_func_backward(dout, q, k, v, out, softmax_lse,
         sm_margin=0,
     )
 
-def flash_attn_forward_aiter(q, k, v, 
-    dropout_p = 0.0, 
-    softmax_scale = None, 
-    causal=False, 
-    window_size=(-1, -1), 
-    softcap=None, 
-    alibi_slopes=None, 
-    return_softmax=False
-):
-    assert HAS_AITER, "Aiter is not available"
-    block_out, block_lse = flash_attn_func_aiter(
-        q,
-        k,
-        v,
-        dropout_p = dropout_p,
-        softmax_scale = softmax_scale,
-        causal = causal,
-        window_size=window_size,
-        alibi_slopes = alibi_slopes,
-        return_lse=True,
-    )
-
-    return block_out, block_lse
 
 def flashinfer_attn_forward(
     q: torch.Tensor,
@@ -367,7 +370,7 @@ def flashinfer_attn_forward(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert HAS_FLASHINFER, "FlashInfer is not available"
     if q.ndim == 4:
-        if q.shape[0] >1:
+        if q.shape[0] > 1:
             raise ValueError("batch size > 1 is not supported")
         out, lse = single_prefill_with_kv_cache(
             q[0],
@@ -380,7 +383,7 @@ def flashinfer_attn_forward(
             return_lse=True,
         )
         lse = lse.transpose(0, 1)
-        out, lse = out.unsqueeze(0),lse.unsqueeze(0)
+        out, lse = out.unsqueeze(0), lse.unsqueeze(0)
     elif q.ndim == 3:
         out, lse = single_prefill_with_kv_cache(
             q,
@@ -412,51 +415,3 @@ def flashinfer_attn_backbward(
     return_softmax: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     raise RuntimeError("Not implemented backward for AttnType.FLASHINFER")
-
-
-def npu_fused_attn_forward(q, k, v,
-        head_num=None,
-        input_layout="BSND",
-        scale=None,
-        pre_tokens=65535,
-        next_tokens=65535
-):
-    assert HAS_NPU, "torch_npu is not avaliable"
-    attention_out, softmax_max, softmax_sum, _, _, _, _ = torch_npu.npu_fusion_attention_v2(
-        q,
-        k,
-        v,
-        head_num=head_num,
-        input_layout=input_layout,
-        scale=scale,
-        pre_tokens=pre_tokens,
-        next_tokens=next_tokens
-    )
-    # lse = torch.logsumexp(attention_out, dim=-1)
-    # print(f"lse shape is: {lse.shape}, softmax_sum shape is: {softmax_sum.shape}, softmax shape is: {softmax_max.shape}")
-    return attention_out, softmax_max, softmax_sum
-
-
-def npu_fused_attn_backward(q, k, v,
-        grad_attention_out,
-        head_num=None,
-        input_layout="BSND",
-        softmax_max=None,
-        softmax_sum=None,
-        attention_in=None,
-        scale_value=None
-):
-    assert HAS_NPU, "torch_npu is not avaliable"
-    dq, dk, dv, _, _, _ = torch_npu.npu_fusion_attention_grad_v2(
-        q,
-        k,
-        v,
-        grad_attention_out,
-        head_num,
-        input_layout,
-        softmax_max=softmax_max,
-        softmax_sum=softmax_sum,
-        attention_in=attention_in,
-        scale_value=scale_value
-    )
-    return dq, dk, dv
