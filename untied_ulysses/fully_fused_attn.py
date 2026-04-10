@@ -12,6 +12,9 @@ if _this_dir not in sys.path:
 
 from typing import Optional
 
+CHUNK_SIZE = os.getenv("CHUNK_SIZE", "1")
+CHUNK_SIZE = int(CHUNK_SIZE)
+
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -75,7 +78,8 @@ def upipe_attn_gqa_forward(
     gqa_ratio = n_heads // n_kv_heads_may_be_replicated
 
     ulysses_degree = dist.get_world_size(ulysses_group)
-    pipe_degree = n_heads // ulysses_degree
+    assert CHUNK_SIZE < n_heads // ulysses_degree, f"CHUNK_SIZE: {CHUNK_SIZE} must be less than n_heads // ulysses_degree: {n_heads // ulysses_degree}"
+    pipe_degree = n_heads // (ulysses_degree * CHUNK_SIZE)
 
     assert (
         n_kv_heads_may_be_replicated % ulysses_degree == 0
@@ -85,8 +89,8 @@ def upipe_attn_gqa_forward(
         softmax_scale = head_dim ** (-0.5)
 
     wq_chunks = torch.chunk(wq, pipe_degree, dim=0)
-    wk_chunks = torch.chunk(wk, pipe_degree // gqa_ratio, dim=0)
-    wv_chunks = torch.chunk(wv, pipe_degree // gqa_ratio, dim=0)
+    wk_chunks = torch.chunk(wk, max(pipe_degree//gqa_ratio, 1), dim=0)
+    wv_chunks = torch.chunk(wv, max(pipe_degree//gqa_ratio, 1), dim=0)
 
     lse_list = []
     final_out = torch.empty(
@@ -147,8 +151,8 @@ def upipe_attn_gqa_forward(
         # deleting the inp to all_to_all to avoid memory leaks
         del attn_out
 
-        head_start = stage * ulysses_degree
-        head_end = head_start + ulysses_degree
+        head_start = stage * (ulysses_degree*CHUNK_SIZE)
+        head_end = head_start + (ulysses_degree*CHUNK_SIZE)
         final_out[:, :, head_start:head_end, :] = out_local
 
         # deleting the output of all_to_all to avoid memory leaks
@@ -217,14 +221,15 @@ def upipe_attn_gqa_backward(
     gqa_ratio = n_heads // n_kv_heads_may_be_replicated
 
     ulysses_degree = dist.get_world_size(ulysses_group)
-    pipe_degree = n_heads // ulysses_degree
+    assert CHUNK_SIZE < n_heads // ulysses_degree, f"CHUNK_SIZE: {CHUNK_SIZE} must be less than n_heads // ulysses_degree: {n_heads // ulysses_degree}"
+    pipe_degree = n_heads // (ulysses_degree * CHUNK_SIZE)
 
     if softmax_scale == 0.0:
         softmax_scale = head_dim ** (-0.5)
 
     wq_chunks = torch.chunk(wq, pipe_degree, dim=0)
-    wk_chunks = torch.chunk(wk, pipe_degree // gqa_ratio, dim=0)
-    wv_chunks = torch.chunk(wv, pipe_degree // gqa_ratio, dim=0)
+    wk_chunks = torch.chunk(wk, max(pipe_degree//gqa_ratio, 1), dim=0)
+    wv_chunks = torch.chunk(wv, max(pipe_degree//gqa_ratio, 1), dim=0)
 
     final_out_chunks = list(torch.chunk(final_out, pipe_degree, dim=2))
     dout_chunks = list(torch.chunk(dout, pipe_degree, dim=2))
@@ -234,8 +239,8 @@ def upipe_attn_gqa_backward(
     dwk = torch.zeros_like(wk)
     dwv = torch.zeros_like(wv)
 
-    dk_accum = [None for _ in range(pipe_degree // gqa_ratio)]
-    dv_accum = [None for _ in range(pipe_degree // gqa_ratio)]
+    dk_accum = [None for _ in range(max(pipe_degree//gqa_ratio, 1))]
+    dv_accum = [None for _ in range(max(pipe_degree//gqa_ratio, 1))]
 
     k_out = None
     v_out = None
@@ -319,8 +324,8 @@ def upipe_attn_gqa_backward(
         else:
             dx.addmm_(dq_flat, wq_chunks[stage])
 
-        head_start = stage * (head_dim * ulysses_degree)
-        head_end = (stage + 1) * (head_dim * ulysses_degree)
+        head_start = stage * (head_dim * ulysses_degree * CHUNK_SIZE)
+        head_end = (stage + 1) * (head_dim * ulysses_degree * CHUNK_SIZE)
         dwq[head_start:head_end, :] = dq_flat.T @ x_flat
 
         # deleting to avoid memory leaks
@@ -342,8 +347,8 @@ def upipe_attn_gqa_backward(
             dx.addmm_(dk_flat, wk_chunks[kv_idx])
             dx.addmm_(dv_flat, wv_chunks[kv_idx])
 
-            kv_head_start = kv_idx * (head_dim * ulysses_degree)
-            kv_head_end = (kv_idx + 1) * (head_dim * ulysses_degree)
+            kv_head_start = kv_idx * (head_dim * ulysses_degree * CHUNK_SIZE)
+            kv_head_end = (kv_idx + 1) * (head_dim * ulysses_degree * CHUNK_SIZE)
             dwk[kv_head_start:kv_head_end, :] = dk_flat.T @ x_flat
             dwv[kv_head_start:kv_head_end, :] = dv_flat.T @ x_flat
 

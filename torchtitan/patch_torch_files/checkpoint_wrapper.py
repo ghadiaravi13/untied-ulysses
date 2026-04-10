@@ -27,7 +27,7 @@ from patch_torch_files.patch_TAO import OffloadActivations as tao_save_on_cpu
 _CHECKPOINT_WRAPPED_MODULE = "_checkpoint_wrapped_module"
 _CHECKPOINT_PREFIX = _CHECKPOINT_WRAPPED_MODULE + "."
 
-AC_LAYER_STRIDE = int(os.environ.get("AC_LAYER_STRIDE", "1000"))
+AC_LAYER_STRIDE = int(os.environ.get("AC_LAYER_STRIDE", "1000")) # setting this to K will skip CPU offloading of the input to every Kth layer
 USE_TAO = os.environ.get("USE_TAO", "False") == "True"
 
 

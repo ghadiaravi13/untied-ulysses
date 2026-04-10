@@ -97,8 +97,8 @@ EXPERIMENTS=(
 )
 
 ATTN_IMPL_OPTIONS=(
-    "upipe_fa3_offload_tiled_mlp"   # UpipeAttention (Untied Ulysses)
-    # "usp_fa3_offload_tiled_mlp"     # LongContextAttention (USP)
+    # "upipe_fa3_offload_tiled_mlp"   # UpipeAttention (Untied Ulysses)
+    "usp_fa3_offload_tiled_mlp"     # LongContextAttention (USP)
     # "torch_ring_alltoall"           # Standard PyTorch attention
 )
 

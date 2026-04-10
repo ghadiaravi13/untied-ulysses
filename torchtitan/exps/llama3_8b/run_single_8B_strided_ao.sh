@@ -45,7 +45,8 @@ FSDP_OFFLOADING=${FSDP_OFFLOADING:-"false"} # ["true", "false"] FSDP CPU Offload
 WANDB_PROJECT=${WANDB_PROJECT:-"strided_ao_traces_8b_c4"}
 
 STEPS=${STEPS:-"5"}
-BATCH_SIZE=${BATCH_SIZE:-"24"}
+BATCH_SIZE=${BATCH_SIZE:-"1"}
+AC_LAYER_STRIDE=${AC_LAYER_STRIDE:-"1000"} # setting this to K will skip CPU offloading of the input to every Kth layer
 
 ################################################################################
 # Environment configuration
