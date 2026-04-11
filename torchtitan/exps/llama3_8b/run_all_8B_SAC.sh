@@ -28,9 +28,9 @@ NODE_RANK=${NODE_RANK:-""}  # Set by torchrun if not specified
 # Training configuration
 ################################################################################
 CONFIG_FILE=${CONFIG_FILE:-"./torchtitan/models/llama3/train_configs/llama3_8b_test_2d.toml"}
-DUMP_FOLDER=${DUMP_FOLDER:-"${ROOT_TMP}/batch_size_run_all_8b_strided_ao"}
-BASE_TRACE_FOLDER="batch_size_run_all_strided_ao"
-MEM_BASE_TRACE_FOLDER="batch_size_run_all_strided_ao"
+DUMP_FOLDER=${DUMP_FOLDER:-"${ROOT_TMP}/run_all_8b_SAC"}
+BASE_TRACE_FOLDER="run_all_8b_SAC"
+MEM_BASE_TRACE_FOLDER="run_all_8b_SAC"
 
 PROFILING_SUFFIX=""
 COMPILE=${COMPILE:-"false"}
@@ -38,10 +38,10 @@ FLAVOR=${FLAVOR:-"8B"}
 
 # AC/Offloading parameters
 OFFLOADING=${OFFLOADING:-"cpu"} # ["no", "UAO", "cpu" "TAO"] Unsloth/Torchtune offloading
-CHECKPOINTING=${CHECKPOINTING:-"full"} # ["none", "async_selective", "sync_selective", "async_", "full"]
+CHECKPOINTING=${CHECKPOINTING:-"async_selective"} # ["none", "async_selective", "sync_selective", "async_", "full"]
 FSDP_OFFLOADING=${FSDP_OFFLOADING:-"false"} # ["true", "false"] FSDP CPU Offloading
 
-WANDB_PROJECT=${WANDB_PROJECT:-"batch_size_run_all_8b_strided_ao"}
+WANDB_PROJECT=${WANDB_PROJECT:-"run_all_8b_SAC"}
 
 STEPS=${STEPS:-"5"}
 # Overridden each iteration when paired with SEQLENS[i]; default only if arrays are unused.
@@ -108,10 +108,10 @@ SEQLENS=(
 
 # Aligned with SEQLENS by index: batch * seqlen ≈ 3_145_728 tokens (~3M) per step.
 BATCH_SIZES=(
-    24
-    12
-    6
-    3
+    1
+    1
+    1
+    1
 )
 
 if [ "${#SEQLENS[@]}" -ne "${#BATCH_SIZES[@]}" ]; then
@@ -121,8 +121,8 @@ fi
 
 # Methods: "name attn_impl ulysses ring"
 METHODS=(
-    # "upipe_strided_ao upipe_fa3_offload_tiled_mlp 8 1"
-    "usp-ulysses usp_fa3_offload_tiled_mlp 8 1"
+    "upipe_SAC upipe_fa3_offload_tiled_mlp 8 1"
+    # "usp-ulysses usp_fa3_offload_tiled_mlp 8 1"
     # "usp-ring usp_fa3_offload_tiled_mlp 1 8"
     # "torch torch_ring_alltoall 1 8"
 )
