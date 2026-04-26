@@ -9,7 +9,7 @@
 
 </div>
 
-An official implementation of **Untied Ulysses**, a context parallelism method for training LLMs on extremely long contexts (up to 5M tokens on a single H100 node for 8M models).
+An official implementation of **Untied Ulysses**, a context parallelism method for training LLMs on extremely long contexts (up to 5M tokens on a single H100 node for 8B models).
 
 ## Prerequisites
 
