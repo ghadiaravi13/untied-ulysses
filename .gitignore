@@ -54,3 +54,6 @@ Thumbs.db
 *FPDT/Megatron-DeepSpeed/examples_deepspeed/sequence_parallel/data
 *FPDT/Megatron-DeepSpeed/examples_deepspeed/sequence_parallel/outputs
 *FPDT/Megatron-DeepSpeed/examples_deepspeed/sequence_parallel/index-cache
+
+# log files
+*logs/
